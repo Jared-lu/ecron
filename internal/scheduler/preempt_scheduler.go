@@ -2,9 +2,7 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"github.com/ecodeclub/ecron/internal/errs"
 	"github.com/ecodeclub/ecron/internal/executor"
 	"github.com/ecodeclub/ecron/internal/storage"
 	"github.com/ecodeclub/ecron/internal/task"
@@ -66,64 +64,104 @@ func (p *PreemptScheduler) Schedule(ctx context.Context) error {
 }
 
 func (p *PreemptScheduler) doTask(ctx context.Context, t task.Task, exec executor.Executor) {
-	timeout, err := p.getTaskTimeout(t)
-	if err != nil || timeout == 0 {
-		// 尽力去调度一个任务，设置一个默认的执行时间
-		timeout = time.Second * 3
-	}
+	defer p.limiter.Release(1)
+	defer p.releaseTask(t)
 
-	eid := p.markStatus(t.ID, task.ExecStatusStarted)
-	ctx2, cancel2 := context.WithTimeout(ctx, timeout)
-	defer cancel2()
+	// 任务执行超时配置
+	timeout := exec.TaskTimeout(t)
+
+	eid, err := p.markStatus(t.ID, task.ExecStatusStarted)
+	if err != nil {
+		// 这里我直接返回，如果只是网络抖动，那么任务释放后，不修改下一次执行时间，该任务可以立刻再次被抢占执行。
+		// 如果是数据库异常，则无法记录任务执行情况，那么放弃这一次执行。
+		return
+	}
+	// 控制任务执行时长
+	execCtx, execCancel := context.WithTimeout(ctx, timeout)
+	defer execCancel()
+
 	ticker := time.NewTicker(p.refreshInterval)
+	defer ticker.Stop()
 	go func() {
-		err := p.refreshTask(ctx2, ticker, t.ID)
+		refreshCtx, refreshCancel := context.WithTimeout(execCtx, time.Second*3)
+		err := p.refreshTask(refreshCtx, ticker, t.ID)
+		refreshCancel()
 		if err != nil {
 			// 续约失败时，通知用户停止执行任务
-			cancel2()
+			execCancel()
 		}
 	}()
 
-	err = exec.Run(ctx2, t, eid)
-	ticker.Stop()
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		p.markStatus(t.ID, task.ExecStatusDeadlineExceeded)
-	case errors.Is(err, context.Canceled):
-		p.markStatus(t.ID, task.ExecStatusCancelled)
-	case err == nil:
-		p.markStatus(t.ID, task.ExecStatusSuccess)
-	default:
-		p.markStatus(t.ID, task.ExecStatusFailed)
-	}
+	// 控制任务最长执行时间
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	go func() {
+		select {
+		case <-execCtx.Done():
+			return
+		case <-ticker.C:
+			execCancel()
+		}
+	}()
 
-	p.setNextTime(t)
-	p.releaseTask(t)
-	p.limiter.Release(1)
+	status, _ := exec.Run(execCtx, t, eid)
+	defer p.setNextTime(t)
+
+	switch status {
+	case task.ExecStatusSuccess:
+		_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+		return
+	case task.ExecStatusFailed:
+		_, _ = p.markStatus(t.ID, task.ExecStatusFailed)
+		return
+	case task.ExecStatusDeadlineExceeded:
+		_, _ = p.markStatus(t.ID, task.ExecStatusDeadlineExceeded)
+		return
+	case task.ExecStatusCancelled:
+		_, _ = p.markStatus(t.ID, task.ExecStatusCancelled)
+		return
+	default:
+		_, _ = p.markStatus(t.ID, task.ExecStatusRunning)
+	}
+	// 任务探查
+	p.explore(execCtx, exec, eid, t)
 }
 
-func (p *PreemptScheduler) getTaskTimeout(t task.Task) (time.Duration, error) {
-	switch t.Type {
-	case task.TypeHttp:
-		var cfg executor.HttpCfg
-		err := json.Unmarshal([]byte(t.Cfg), &cfg)
-		if err != nil {
-			p.logger.Error("任务配置信息错误",
-				slog.Int64("ID", t.ID), slog.String("Cfg", t.Cfg))
-			return 0, errs.ErrWrongTaskCfg
+func (p *PreemptScheduler) explore(ctx context.Context, exec executor.Executor, eid int64, t task.Task) {
+	ch := exec.Explore(ctx, eid, t)
+	if ch == nil {
+		return
+	}
+ForEnd:
+	for {
+		select {
+		case <-ctx.Done():
+			// 主动取消或者超时
+			err := ctx.Err()
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+			case errors.Is(err, context.Canceled):
+				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+			}
+			break ForEnd
+		case res, ok := <-ch:
+			if !ok {
+				break ForEnd
+			}
+			switch res.Status {
+			case executor.StatusSuccess:
+				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+				_ = p.executionDAO.UpdateProgress(ctx, eid, uint8(100))
+				break ForEnd
+			case executor.StatusFailed:
+				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+				break ForEnd
+			case executor.StatusRunning:
+				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+			default:
+			}
 		}
-		return cfg.TaskTimeout, nil
-	case task.TypeLocal:
-		var cfg executor.LocalCfg
-		err := json.Unmarshal([]byte(t.Cfg), &cfg)
-		if err != nil {
-			p.logger.Error("任务配置信息错误",
-				slog.Int64("ID", t.ID), slog.String("Cfg", t.Cfg))
-			return 0, errs.ErrWrongTaskCfg
-		}
-		return cfg.TaskTimeout, nil
-	default:
-		return 0, errs.ErrUnknownTask
 	}
 }
 
@@ -179,7 +217,7 @@ func (p *PreemptScheduler) setNextTime(t task.Task) {
 	}
 }
 
-func (p *PreemptScheduler) markStatus(tid int64, status task.ExecStatus) int64 {
+func (p *PreemptScheduler) markStatus(tid int64, status task.ExecStatus) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
 	var eid int64
@@ -189,5 +227,5 @@ func (p *PreemptScheduler) markStatus(tid int64, status task.ExecStatus) int64 {
 			slog.Int64("TaskID", tid),
 			slog.Any("error", err))
 	}
-	return eid
+	return eid, err
 }

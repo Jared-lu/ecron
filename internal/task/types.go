@@ -59,6 +59,7 @@ const (
 	ExecStatusFailed
 	ExecStatusDeadlineExceeded
 	ExecStatusCancelled
+	ExecStatusRunning // 在语义上，与 ExecStatusStarted 没有区别
 )
 
 func (s ExecStatus) ToUint8() uint8 {

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/ecodeclub/ecron/internal/errs"
 	"github.com/ecodeclub/ecron/internal/task"
 	"log/slog"
@@ -28,17 +29,38 @@ func (l *LocalExecutor) Name() string {
 	return "LOCAL"
 }
 
-func (l *LocalExecutor) Run(ctx context.Context, t task.Task, eid int64) error {
+func (l *LocalExecutor) Run(ctx context.Context, t task.Task, eid int64) (task.ExecStatus, error) {
 	fn, ok := l.fn[t.Name]
 	if !ok {
 		l.logger.Error("未知执行方法的任务",
 			slog.Int64("ID", t.ID),
 			slog.String("Name", t.Name))
-		return errs.ErrUnknownTask
+		return task.ExecStatusFailed, errs.ErrUnknownTask
 	}
-	return fn(ctx, t)
+	err := fn(ctx, t)
+	if err != nil {
+		return task.ExecStatusFailed, err
+	} else {
+		return task.ExecStatusSuccess, nil
+	}
+}
+
+func (l *LocalExecutor) Explore(ctx context.Context, eid int64, t task.Task) <-chan Result {
+	// 在我们的默认实现中，本地任务不支持任务探查，需要的用户可以自己实现
+	return nil
+}
+
+func (l *LocalExecutor) TaskTimeout(t task.Task) time.Duration {
+	var result LocalCfg
+	err := json.Unmarshal([]byte(t.Cfg), &result)
+	if err != nil || result.TaskTimeout < 0 {
+		return time.Minute
+	}
+	return result.TaskTimeout
 }
 
 type LocalCfg struct {
 	TaskTimeout time.Duration `json:"taskTimeout"`
+	// 任务探查间隔
+	ExploreInterval time.Duration `json:"exploreInterval"`
 }

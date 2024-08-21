@@ -5,24 +5,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ecodeclub/ecron/internal"
 	"github.com/ecodeclub/ecron/internal/errs"
 	"github.com/ecodeclub/ecron/internal/task"
-	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 )
 
 type HttpExecutor struct {
-	logger   *slog.Logger
-	reportor *internal.Reportor
+	logger *slog.Logger
+	client *http.Client
+	// 任务探查最大失败次数
+	maxFailCount int
 }
 
-func NewHttpExecutor(logger *slog.Logger, reportor *internal.Reportor) Executor {
+func NewHttpExecutor(logger *slog.Logger) *HttpExecutor {
 	return &HttpExecutor{
-		logger:   logger,
-		reportor: reportor,
+		client: &http.Client{
+			// http调用超时配置
+			Timeout: time.Second * 5,
+		},
+		logger:       logger,
+		maxFailCount: 5,
 	}
 }
 
@@ -30,119 +35,157 @@ func (h *HttpExecutor) Name() string {
 	return "HTTP"
 }
 
-func (h *HttpExecutor) Run(ctx context.Context, t task.Task, eid int64) error {
-	var cfg HttpCfg
-	// 在scheduler处理过一次，所有这里不处理也没关系
-	_ = json.Unmarshal([]byte(t.Cfg), &cfg)
-
-	// 发起任务执行和任务进度探查都使用同一个接口
-	// 考虑后续允许用户自己上报任务执行进度，那么它用带着这个eid来上报
-	url := fmt.Sprintf("%s?execution_id=%d", cfg.Url, eid)
-	resp, err := http.Get(url)
+func (h *HttpExecutor) Run(ctx context.Context, t task.Task, eid int64) (task.ExecStatus, error) {
+	cfg, err := h.parseCfg(t.Cfg)
 	if err != nil {
-		h.logger.Error("发起任务执行失败", slog.Any("error", err))
-		return errs.ErrRequestExecuteFailed
+		h.logger.Error("任务配置信息错误",
+			slog.Int64("ID", t.ID), slog.String("Cfg", t.Cfg))
+		return task.ExecStatusFailed, errs.ErrInCorrectConfig
+	}
+
+	request, err := http.NewRequest(cfg.Method, cfg.Url, bytes.NewBuffer([]byte(cfg.Body)))
+	if err != nil {
+		return task.ExecStatusFailed, err
+	}
+	if cfg.Header == nil {
+		request.Header = make(http.Header)
+	} else {
+		request.Header = cfg.Header
+	}
+	request.Header.Set("execution_id", fmt.Sprintf("%v", eid))
+	resp, err := h.client.Do(request)
+	ok := os.IsTimeout(err)
+	if ok {
+		return task.ExecStatusDeadlineExceeded, errs.ErrRequestFailed
+	}
+	if err != nil {
+		h.logger.Error("发起任务执行请求失败",
+			slog.Int64("ID", t.ID), slog.Any("error", err))
+		return task.ExecStatusFailed, errs.ErrRequestFailed
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return task.ExecStatusFailed, nil
+	}
 
-	state := h.report(ctx, resp)
-	switch state {
-	case internal.StateFailed:
-		return errs.ErrExecuteTaskFailed
-	case internal.StateSuccess:
-		return nil
+	var result Result
+	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return task.ExecStatusFailed, err
+	}
+	switch result.Status {
+	case StatusSuccess:
+		return task.ExecStatusSuccess, nil
+	case StatusFailed:
+		return task.ExecStatusFailed, nil
+	case StatusRunning:
+		return task.ExecStatusRunning, nil
 	default:
-		return h.checkExecProcess(ctx, cfg, eid)
+		return task.ExecStatusFailed, nil
 	}
 }
 
-func (h *HttpExecutor) report(ctx context.Context, resp *http.Response) internal.State {
-	body, _ := io.ReadAll(resp.Body)
-	reportCtx, cancel := context.WithTimeout(ctx, time.Second*3)
-	res := h.reportor.Report(reportCtx, string(body))
-	cancel()
-	return res
+func (h *HttpExecutor) Explore(ctx context.Context, eid int64, t task.Task) <-chan Result {
+	resultChan := make(chan Result, 1)
+	go h.explore(ctx, resultChan, t, eid)
+	return resultChan
 }
 
-// TODO: 优化探查的时间间隔策略
-func (h *HttpExecutor) checkInterval(taskTimeout time.Duration) time.Duration {
-	if taskTimeout >= time.Hour {
-		return time.Minute * 10
-	}
-	if taskTimeout >= time.Minute*30 {
-		return time.Minute * 5
-	}
-	if taskTimeout > time.Minute {
-		return time.Second * 10
-	}
-	if taskTimeout > time.Second*10 {
-		return time.Second * 5
-	}
-	return time.Second
-}
+func (h *HttpExecutor) explore(ctx context.Context, ch chan Result, t task.Task, eid int64) {
+	defer close(ch)
 
-func (h *HttpExecutor) checkExecProcess(ctx context.Context, cfg HttpCfg, eid int64) error {
-	interval := h.checkInterval(cfg.TaskTimeout)
-	ticker := time.NewTicker(interval)
-	url := fmt.Sprintf("%s?execution_id=%d", cfg.Url, eid)
+	cfg, _ := h.parseCfg(t.Cfg)
+	failResult := Result{
+		Eid:    eid,
+		Status: StatusFailed,
+	}
+
+	failCount := 0
+	ticker := time.NewTicker(cfg.ExploreInterval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			h.cancelExec(cfg.Url, eid)
-			return ctx.Err()
+			// 通知业务方取消任务执行
+			h.cancelExec(cfg, eid)
+			return
 		case <-ticker.C:
-			resp, err := http.Get(url)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				alive := h.healthCheck(url)
-				if alive {
-					continue
-				} else {
-					h.logger.Error("业务方状态异常",
-						slog.Any("error", err),
-						slog.Any("url", url))
-					return errs.ErrExecuteTaskFailed
+			request, err := http.NewRequest(cfg.Method, cfg.Url, bytes.NewBuffer([]byte(cfg.Body)))
+			if err != nil {
+				if failCount >= h.maxFailCount {
+					ch <- failResult
+					return
 				}
+				failCount++
 			}
-			defer resp.Body.Close()
-
-			state := h.report(ctx, resp)
-			switch state {
-			case internal.StateRunning:
-				continue
-			case internal.StateFailed:
-				return errs.ErrExecuteTaskFailed
-			case internal.StateSuccess:
-				return nil
-			default:
-				return errs.ErrExecuteTaskFailed
+			if cfg.Header == nil {
+				request.Header = make(http.Header)
+			} else {
+				request.Header = cfg.Header
 			}
+			request.Header.Set("execution_id", fmt.Sprintf("%v", eid))
+			resp, err := h.client.Do(request)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				if failCount >= h.maxFailCount {
+					ch <- failResult
+					return
+				}
+				failCount++
+			}
+			_ = resp.Body.Close()
+			var result Result
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				if failCount >= h.maxFailCount {
+					ch <- failResult
+					return
+				}
+				failCount++
+			}
+			ch <- result
+			if result.Status != StatusRunning {
+				return
+			}
+		default:
 		}
 	}
 }
 
-func (h *HttpExecutor) healthCheck(url string) bool {
-	for i := 1; i <= 3; i++ {
-		resp, err := http.Get(url)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			time.Sleep(time.Second)
-			continue
-		} else {
-			return true
-		}
+func (h *HttpExecutor) TaskTimeout(t task.Task) time.Duration {
+	result, err := h.parseCfg(t.Cfg)
+	if err != nil || result.TaskTimeout < 0 {
+		return time.Minute
 	}
-	return false
+	return result.TaskTimeout
 }
 
-// cancelExec 通知业务方停止执行任务
-func (h *HttpExecutor) cancelExec(url string, eid int64) {
-	contentType := "application/json"
-	jsonBody := fmt.Sprintf(`{"execution_id":"%d"}`, eid)
-	_, err := http.Post(url, contentType, bytes.NewReader([]byte(jsonBody)))
+func (h *HttpExecutor) parseCfg(cfg string) (HttpCfg, error) {
+	var result HttpCfg
+	err := json.Unmarshal([]byte(cfg), &result)
+	return result, err
+}
+
+func (h *HttpExecutor) parseResult(body []byte) (Result, error) {
+	var result Result
+	err := json.Unmarshal(body, &result)
+	return result, err
+}
+
+func (h *HttpExecutor) cancelExec(cfg HttpCfg, eid int64) {
+	request, err := http.NewRequest(cfg.Method, cfg.Url, bytes.NewBuffer([]byte(cfg.Body)))
 	if err != nil {
-		h.logger.Error("通知业务方停止任务执行失败",
-			slog.Int64("execution_id", eid),
-			slog.Any("error", err))
+		h.logger.Error("通知业务方停止执行任务失败", slog.Int64("execution_id", eid))
+		return
+	}
+	if cfg.Header == nil {
+		request.Header = make(http.Header)
+	} else {
+		request.Header = cfg.Header
+	}
+	request.Header.Set("execution_id", fmt.Sprintf("%v", eid))
+	// 当业务方收到带有 Header cancel=true 的请求时，要停止执行任务
+	request.Header.Set("cancel", fmt.Sprintf("%v", true))
+	resp, err := h.client.Do(request)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		h.logger.Error("通知业务方停止执行任务失败", slog.Int64("execution_id", eid))
 	}
 }
 
@@ -153,4 +196,6 @@ type HttpCfg struct {
 	Body   string      `json:"body"`
 	// 预计任务执行时长
 	TaskTimeout time.Duration `json:"taskTimeout"`
+	// 任务探查间隔
+	ExploreInterval time.Duration `json:"exploreInterval"`
 }
