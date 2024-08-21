@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/ecodeclub/ecron/internal/errs"
 	"github.com/ecodeclub/ecron/internal/task"
 	"log/slog"
@@ -38,10 +39,15 @@ func (l *LocalExecutor) Run(ctx context.Context, t task.Task, eid int64) (task.E
 		return task.ExecStatusFailed, errs.ErrUnknownTask
 	}
 	err := fn(ctx, t)
-	if err != nil {
-		return task.ExecStatusFailed, err
-	} else {
+	switch {
+	case err == nil:
 		return task.ExecStatusSuccess, nil
+	case errors.Is(err, context.Canceled):
+		return task.ExecStatusCancelled, nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return task.ExecStatusDeadlineExceeded, nil
+	default:
+		return task.ExecStatusFailed, err
 	}
 }
 

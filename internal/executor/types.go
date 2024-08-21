@@ -13,6 +13,7 @@ type Executor interface {
 	// Run 执行任务
 	// ctx 整个调度器的上下文，当有ctx.Done信号时，就要考虑结束任务的执行。
 	// eid execution id，将这个传递给任务执行方。
+	// 如果实现不支持任务探查，则不应该返回 task.ExecStatusStarted 和 task.ExecStatusRunning
 	Run(ctx context.Context, t task.Task, eid int64) (task.ExecStatus, error)
 	// Explore 任务进度探查。
 	// 返回 <-chan Result，任务探查结果会被写进该channel中，用户收到 StatusSuccess 或 StatusFailed 时，表示探查结束。
