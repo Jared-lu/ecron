@@ -131,9 +131,11 @@ func (h *HttpExecutor) explore(ctx context.Context, ch chan Result, t task.Task,
 				}
 				failCount++
 			}
-			_ = resp.Body.Close()
+
 			var result Result
-			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			err = json.NewDecoder(resp.Body).Decode(&result)
+			_ = resp.Body.Close()
+			if err != nil {
 				if failCount >= h.maxFailCount {
 					ch <- failResult
 					return

@@ -77,7 +77,7 @@ func (p *PreemptScheduler) doTask(ctx context.Context, t task.Task, exec executo
 		return
 	}
 	// 控制任务执行时长
-	execCtx, execCancel := context.WithTimeout(ctx, timeout)
+	execCtx, execCancel := context.WithDeadline(ctx, time.Now().Add(timeout))
 	defer execCancel()
 
 	ticker := time.NewTicker(p.refreshInterval)
@@ -88,18 +88,6 @@ func (p *PreemptScheduler) doTask(ctx context.Context, t task.Task, exec executo
 		refreshCancel()
 		if err != nil {
 			// 续约失败时，通知用户停止执行任务
-			execCancel()
-		}
-	}()
-
-	// 控制任务最长执行时间
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	go func() {
-		select {
-		case <-execCtx.Done():
-			return
-		case <-ticker.C:
 			execCancel()
 		}
 	}()
@@ -140,9 +128,9 @@ ForEnd:
 			err := ctx.Err()
 			switch {
 			case errors.Is(err, context.DeadlineExceeded):
-				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+				_, _ = p.markStatus(t.ID, task.ExecStatusDeadlineExceeded)
 			case errors.Is(err, context.Canceled):
-				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+				_, _ = p.markStatus(t.ID, task.ExecStatusCancelled)
 			}
 			break ForEnd
 		case res, ok := <-ch:
@@ -152,13 +140,12 @@ ForEnd:
 			switch res.Status {
 			case executor.StatusSuccess:
 				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
-				_ = p.executionDAO.UpdateProgress(ctx, eid, uint8(100))
 				break ForEnd
 			case executor.StatusFailed:
-				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+				_, _ = p.markStatus(t.ID, task.ExecStatusFailed)
 				break ForEnd
 			case executor.StatusRunning:
-				_, _ = p.markStatus(t.ID, task.ExecStatusSuccess)
+				_ = p.executionDAO.UpdateProgress(ctx, eid, uint8(res.Progress))
 			default:
 			}
 		}
@@ -220,12 +207,14 @@ func (p *PreemptScheduler) setNextTime(t task.Task) {
 func (p *PreemptScheduler) markStatus(tid int64, status task.ExecStatus) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
-	var eid int64
 	eid, err := p.executionDAO.InsertExecStatus(ctx, tid, status)
 	if err != nil {
 		p.logger.Error("记录任务执行失败",
 			slog.Int64("TaskID", tid),
 			slog.Any("error", err))
+	}
+	if status == task.ExecStatusSuccess {
+		_ = p.executionDAO.UpdateProgress(ctx, eid, uint8(100))
 	}
 	return eid, err
 }
