@@ -425,6 +425,7 @@ func (s *SchedulerTestSuite) TestScheduleHttpTask() {
 					Status:       mysql.TaskStatusWaiting,
 					NextExecTime: now.Add(-1 * time.Second).UnixMilli(),
 					Cfg: marshal(t, executor.HttpCfg{
+						Method:      http.MethodGet,
 						Url:         "http://localhost:8080/success",
 						TaskTimeout: time.Second * 5,
 					}),
@@ -475,6 +476,7 @@ func (s *SchedulerTestSuite) TestScheduleHttpTask() {
 					Executor: httpExec.Name(),
 					Status:   mysql.TaskStatusWaiting,
 					Cfg: marshal(t, executor.HttpCfg{
+						Method:      http.MethodGet,
 						Url:         "http://localhost:8080/failed",
 						TaskTimeout: time.Second * 5,
 					}),
@@ -568,7 +570,7 @@ func (s *SchedulerTestSuite) TestScheduleHttpTask() {
 			},
 		},
 		{
-			name: "任务执行超时",
+			name: "发起HTTP调用超时",
 			before: func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
