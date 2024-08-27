@@ -89,6 +89,7 @@ func (h *HttpExecutor) explore(ctx context.Context, ch chan Result, t task.Task,
 			result, err := h.queryTaskStatus(cfg, eid)
 			if err != nil {
 				failCount++
+				continue
 			}
 			ch <- result
 			if result.Status != StatusRunning {
