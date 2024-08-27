@@ -48,7 +48,7 @@ func TestHttpExecutor_Run(t *testing.T) {
 				}),
 			},
 			statusCode:     http.StatusBadRequest,
-			wantErr:        nil,
+			wantErr:        errs.ErrRequestFailed,
 			wantTaskStatus: task.ExecStatusFailed,
 		},
 		{
@@ -124,7 +124,7 @@ func TestHttpExecutor_Run(t *testing.T) {
 				},
 			},
 			statusCode:     http.StatusOK,
-			wantErr:        errs.ErrRequestFailed,
+			wantErr:        errs.ErrRequestTimeout,
 			wantTaskStatus: task.ExecStatusDeadlineExceeded,
 		},
 	}
