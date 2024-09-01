@@ -95,7 +95,6 @@ func (h *HttpExecutor) explore(ctx context.Context, ch chan Result, t task.Task,
 			if result.Status != StatusRunning {
 				return
 			}
-		default:
 		}
 	}
 	// failCount >= h.maxFailCount，任务执行失败

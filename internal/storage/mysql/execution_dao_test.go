@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestGormExecutionDAO_InsertExecStatus(t *testing.T) {
+func TestGormExecutionDAO_Upsert(t *testing.T) {
 	testCase := []struct {
 		name       string
 		sqlMock    func(t *testing.T) *sql.DB
@@ -31,7 +31,7 @@ func TestGormExecutionDAO_InsertExecStatus(t *testing.T) {
 				return mockDB
 			},
 			id:         1,
-			taskStatus: task.ExecStatusStarted,
+			taskStatus: task.ExecStatusRunning,
 			wantErr:    nil,
 			wantID:     1,
 		},
@@ -62,49 +62,9 @@ func TestGormExecutionDAO_InsertExecStatus(t *testing.T) {
 			})
 			require.NoError(t, err)
 			dao := NewGormExecutionDAO(db)
-			id, err := dao.InsertExecStatus(context.Background(), tc.id, tc.taskStatus)
+			id, err := dao.Upsert(context.Background(), tc.id, tc.taskStatus, 0)
 			assert.Equal(t, tc.wantErr, err)
 			assert.Equal(t, tc.wantID, id)
-		})
-	}
-}
-
-func TestGormExecutionDAO_UpdateProgress(t *testing.T) {
-	testCases := []struct {
-		name     string
-		sqlMock  func(t *testing.T) *sql.DB
-		id       int64
-		progress int
-		wantErr  error
-	}{
-		{
-			name: "更新任务进度成功",
-			sqlMock: func(t *testing.T) *sql.DB {
-				mockDB, mock, err := sqlmock.New()
-				require.NoError(t, err)
-				mock.ExpectExec("UPDATE `execution` .*").
-					WillReturnResult(sqlmock.NewResult(1, 1))
-				return mockDB
-			},
-			id:       1,
-			progress: 10,
-			wantErr:  nil,
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			sqlDB := tc.sqlMock(t)
-			db, err := gorm.Open(mysql.New(mysql.Config{
-				Conn:                      sqlDB,
-				SkipInitializeWithVersion: true,
-			}), &gorm.Config{
-				DisableAutomaticPing:   true,
-				SkipDefaultTransaction: true,
-			})
-			require.NoError(t, err)
-			dao := NewGormExecutionDAO(db)
-			err = dao.UpdateProgress(context.Background(), tc.id, uint8(tc.progress))
-			assert.Equal(t, tc.wantErr, err)
 		})
 	}
 }
