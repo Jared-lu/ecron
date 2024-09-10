@@ -10,4 +10,6 @@ var (
 	ErrUnknownTask       = errors.New("未知的任务类型")
 
 	ErrNoExecutableTask = errors.New("当前没有可执行的任务")
+
+	ErrTaskNotFound = errors.New("找不到任务")
 )

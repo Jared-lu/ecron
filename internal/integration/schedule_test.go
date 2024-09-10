@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/ecodeclub/ecron/internal/executor"
 	"github.com/ecodeclub/ecron/internal/integration/startup"
+	"github.com/ecodeclub/ecron/internal/preempter"
 	"github.com/ecodeclub/ecron/internal/scheduler"
 	"github.com/ecodeclub/ecron/internal/storage/mysql"
 	"github.com/ecodeclub/ecron/internal/task"
@@ -37,7 +38,8 @@ func (s *SchedulerTestSuite) SetupSuite() {
 	executionDAO := mysql.NewGormExecutionDAO(s.db)
 	limiter := semaphore.NewWeighted(100)
 	s.logger = startup.InitLogger()
-	s.s = scheduler.NewPreemptScheduler(taskDAO, executionDAO, time.Second*5, limiter, s.logger)
+	p := preempter.NewDBPreempter(taskDAO, time.Second*5, s.logger)
+	s.s = scheduler.NewPreemptScheduler(p, executionDAO, time.Second*5, limiter, s.logger)
 }
 
 func (s *SchedulerTestSuite) TearDownTest() {
@@ -850,7 +852,6 @@ func (s *SchedulerTestSuite) TestScheduleHttpTask() {
 				err := s.db.WithContext(ctx).Model(&mysql.TaskInfo{}).
 					Where("id = ?", 10).Find(&taskInfo).Error
 				require.NoError(t, err)
-				// 只有任务很快执行完，这个断言才能成立
 				assert.Equal(t, mysql.TaskStatusWaiting, taskInfo.Status)
 				assert.True(t, taskInfo.Utime > now.UnixMilli())
 				assert.True(t, taskInfo.NextExecTime > time.Now().UnixMilli())
@@ -880,6 +881,7 @@ func (s *SchedulerTestSuite) TestScheduleHttpTask() {
 			// 通过context强制让调度器退出
 			err := s.s.Schedule(tc.ctxFn(t))
 			assert.Equal(t, context.Canceled, err)
+			time.Sleep(time.Second) // 等待执行任务的goroutine全部退出
 			tc.after(t)
 		})
 	}

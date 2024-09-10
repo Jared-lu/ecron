@@ -36,11 +36,15 @@ func (g *GormTaskDAO) Release(ctx context.Context, t task.Task) error {
 		}).Error
 }
 
-func (g *GormTaskDAO) UpdateUtime(ctx context.Context, id int64) error {
-	return g.db.WithContext(ctx).Model(&TaskInfo{}).
-		Where("id = ?", id).Updates(map[string]any{
+func (g *GormTaskDAO) UpdateUtime(ctx context.Context, t task.Task) error {
+	res := g.db.WithContext(ctx).Model(&TaskInfo{}).
+		Where("id = ? AND version = ?", t.ID, t.Version).Updates(map[string]any{
 		"utime": time.Now().UnixMilli(),
-	}).Error
+	})
+	if res.RowsAffected == 0 && res.Error != nil {
+		return errs.ErrTaskNotFound
+	}
+	return res.Error
 }
 
 func (g *GormTaskDAO) Stop(ctx context.Context, id int64) error {

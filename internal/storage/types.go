@@ -18,7 +18,7 @@ type TaskDAO interface {
 	// Stop 停止任务
 	Stop(ctx context.Context, id int64) error
 	UpdateNextTime(ctx context.Context, id int64, next time.Time) error
-	UpdateUtime(ctx context.Context, id int64) error
+	UpdateUtime(ctx context.Context, it task.Task) error
 }
 
 // ExecutionDAO 任务执行情况
