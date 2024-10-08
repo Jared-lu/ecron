@@ -116,7 +116,7 @@ func (d *taskLeaser) Release(ctx context.Context) error {
 		d.hasDone.Store(true)
 		close(d.done)
 	})
-	return d.taskRepository.ReleaseTask(ctx, d.t.ID, d.t.Owner)
+	return d.taskRepository.ReleaseTask(ctx, d.t, d.t.Owner)
 }
 
 func (d *taskLeaser) GetTask() task.Task {
@@ -195,7 +195,7 @@ type taskRepository interface {
 	// PreemptTask 获取一个任务
 	PreemptTask(ctx context.Context, tid int64, oldOwner string, newOwner string) error
 	// ReleaseTask 释放任务
-	ReleaseTask(ctx context.Context, tid int64, owner string) error
+	ReleaseTask(ctx context.Context, t task.Task, owner string) error
 	// RefreshTask 续约
 	RefreshTask(ctx context.Context, tid int64, owner string) error
 }
@@ -215,12 +215,20 @@ func newGormTaskRepository(db *gorm.DB, batchSize int, refreshInterval time.Dura
 }
 
 // ReleaseTask 如果释放时释放了别人的抢到的任务怎么办，这里通过Owner控制
-func (g *gormTaskRepository) ReleaseTask(ctx context.Context, tid int64, owner string) error {
+func (g *gormTaskRepository) ReleaseTask(ctx context.Context, t task.Task, owner string) error {
+	now := time.Now()
+
+	next, _ := t.NextTime(now)
+	status := task.TaskStatusWaiting
+	if next.IsZero() {
+		status = task.TaskStatusFinished
+	}
 	res := g.db.WithContext(ctx).Model(&TaskInfo{}).
-		Where("id = ? AND owner = ?", tid, owner).
+		Where("id = ? AND owner = ?", t.ID, owner).
 		Updates(map[string]interface{}{
-			"status": TaskStatusWaiting,
-			"utime":  time.Now().UnixMilli(),
+			"status":         status,
+			"utime":          now.UnixMilli(),
+			"next_exec_time": next.UnixMilli(),
 		})
 
 	if res.RowsAffected > 0 {
@@ -231,7 +239,7 @@ func (g *gormTaskRepository) ReleaseTask(ctx context.Context, tid int64, owner s
 
 func (g *gormTaskRepository) RefreshTask(ctx context.Context, tid int64, owner string) error {
 	res := g.db.WithContext(ctx).Model(&TaskInfo{}).
-		Where("id = ? AND owner = ? AND status = ?", tid, owner, TaskStatusRunning).
+		Where("id = ? AND owner = ? AND status = ?", tid, owner, task.TaskStatusRunning).
 		Updates(map[string]any{
 			"utime": time.Now().UnixMilli(),
 		})
@@ -249,8 +257,8 @@ func (g *gormTaskRepository) TryPreempt(ctx context.Context, f func(ctx context.
 	var tasks []TaskInfo
 	// 一次取一批
 	err := g.db.WithContext(ctx).Model(&TaskInfo{}).
-		Where("status = ? AND next_exec_time <= ?", TaskStatusWaiting, now.UnixMilli()).
-		Or("status = ? AND utime < ?", TaskStatusRunning, t).
+		Where("status = ? AND next_exec_time <= ?", task.TaskStatusWaiting, now.UnixMilli()).
+		Or("status = ? AND utime < ?", task.TaskStatusRunning, t).
 		Find(&tasks).Limit(g.batchSize).Error
 	if err != nil {
 		return zero, err
@@ -269,7 +277,7 @@ func (g *gormTaskRepository) PreemptTask(ctx context.Context, tid int64, oldOwne
 	res := g.db.WithContext(ctx).Model(&TaskInfo{}).
 		Where("id = ? AND owner = ?", tid, oldOwner).
 		Updates(map[string]interface{}{
-			"status": TaskStatusRunning,
+			"status": task.TaskStatusRunning,
 			"utime":  time.Now().UnixMilli(),
 			"owner":  newOwner,
 		})
