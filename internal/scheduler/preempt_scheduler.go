@@ -45,7 +45,6 @@ func (p *PreemptScheduler) RegisterExecutor(execs ...executor.Executor) {
 
 func (p *PreemptScheduler) Schedule(ctx context.Context) error {
 	for {
-
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -161,7 +160,7 @@ func (p *PreemptScheduler) ReleaseTask(l preempt.TaskLeaser, t task.Task) {
 }
 
 func (p *PreemptScheduler) doTask(ctx context.Context, t task.Task, exec executor.Executor) {
-	eid, err := p.executionDAO.Create(ctx, t.ID)
+	eid, err := p.executionDAO.Upsert(ctx, t.ID, task.ExecStatusRunning, 0)
 	if err != nil {
 		return
 	}
@@ -252,7 +251,7 @@ func (p *PreemptScheduler) from(status executor.Status) task.ExecStatus {
 func (p *PreemptScheduler) updateProgressStatus(eid int64, progress int, status task.ExecStatus) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
-	err := p.executionDAO.Update(ctx, eid, status, progress)
+	eid, err := p.executionDAO.Upsert(ctx, eid, status, uint8(progress))
 	if err != nil {
 		p.logger.Error("更新任务记录失败", slog.Int64("execution_id", eid),
 			slog.String("exec_status", status.String()), slog.Int("progress", progress),

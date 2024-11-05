@@ -106,21 +106,6 @@ func (m *MockExecutionDAO) EXPECT() *MockExecutionDAOMockRecorder {
 	return m.recorder
 }
 
-// Create mocks base method.
-func (m *MockExecutionDAO) Create(ctx context.Context, tid int64) (int64, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, tid)
-	ret0, _ := ret[0].(int64)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// Create indicates an expected call of Create.
-func (mr *MockExecutionDAOMockRecorder) Create(ctx, tid any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockExecutionDAO)(nil).Create), ctx, tid)
-}
-
 // GetLastExecution mocks base method.
 func (m *MockExecutionDAO) GetLastExecution(ctx context.Context, tid int64) (task.Execution, error) {
 	m.ctrl.T.Helper()
@@ -134,20 +119,6 @@ func (m *MockExecutionDAO) GetLastExecution(ctx context.Context, tid int64) (tas
 func (mr *MockExecutionDAOMockRecorder) GetLastExecution(ctx, tid any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLastExecution", reflect.TypeOf((*MockExecutionDAO)(nil).GetLastExecution), ctx, tid)
-}
-
-// Update mocks base method.
-func (m *MockExecutionDAO) Update(ctx context.Context, eid int64, status task.ExecStatus, progress int) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Update", ctx, eid, status, progress)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Update indicates an expected call of Update.
-func (mr *MockExecutionDAOMockRecorder) Update(ctx, eid, status, progress any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockExecutionDAO)(nil).Update), ctx, eid, status, progress)
 }
 
 // Upsert mocks base method.

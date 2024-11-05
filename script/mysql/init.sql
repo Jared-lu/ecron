@@ -1,32 +1,30 @@
-create database if not exists `ecron`;
+CREATE DATABASE IF NOT EXISTS ecron;
 
-USE ecron;
-
-create table if not EXISTS `task_info`
+CREATE TABLE IF NOT EXISTS `ecron.task_info`
 (
-    id                bigint auto_increment primary key,
-    name              varchar(128)  not null comment '任务名称',
-    type              varchar(32)   not null comment '任务类型',
-    cron              varchar(32)   not null comment 'cron表达式',
-    executor          varchar(128)  not null comment '执行器名称',
-    owner             varchar(64)   not null comment '用于实现乐观锁',
-    status            tinyint,
-    cfg               text          not null comment '执行配置',
-    next_exec_time    bigint comment '下一次执行时间',
-    ctime       bigint        not null,
-    utime      bigint        not null,
+    id                BIGINT AUTO_INCREMENT PRIMARY KEY ,
+    name              VARCHAR(128)  NOT NULL COMMENT '任务名称',
+    type              VARCHAR(32)   NOT NULL COMMENT '任务类型',
+    cron              VARCHAR(32)   NOT NULL COMMENT 'cron表达式',
+    executor          VARCHAR(32)  NOT NULL COMMENT '执行器名称',
+    owner             VARCHAR(64)   NOT NULL COMMENT '用于实现乐观锁',
+    status            TINYINT NOT NULL DEFAULT 1 COMMENT '0-无效，1-有效',
+    cfg               TEXT          NOT NULL COMMENT '任务配置',
+    next_exec_time    BIGINT COMMENT '下一次执行时间',
+    ctime       BIGINT        NOT NULL ,
+    utime      BIGINT        NOT NULL ,
     INDEX idx_status_next_exec_time(status, next_exec_time),
     INDEX idx_status_utime(status, utime)
-) comment '任务信息';
+) COMMENT '任务信息';
 
-create table if not EXISTS `execution`
+
+CREATE TABLE IF NOT EXISTS  `ecron.task_info`
 (
-    id                int auto_increment primary key,
-    tid               int not null,
-    status            int,
-    progress    int,
-    ctime       bigint        not null,
-    utime       bigint        not null
-    )
-    comment '任务执行情况';
-
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY ,
+    tid         BIGINT NOT NULL COMMENT '任务id',
+    status      TINYINT COMMENT '执行状态，0-未知，1-运行中，2-成功，3-失败，4-超时，5-主动取消',
+    progress    INT COMMENT '执行进度，取值0-100',
+    ctime       BIGINT        NOT NULL ,
+    utime       bigint        NOT NULL,
+    UNIQUE idx_tid(tid)
+) comment '任务执行情况';

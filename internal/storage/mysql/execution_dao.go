@@ -13,15 +13,6 @@ type GormExecutionDAO struct {
 	db *gorm.DB
 }
 
-func (h *GormExecutionDAO) Update(ctx context.Context, eid int64, status task.ExecStatus, progress int) error {
-	return h.db.WithContext(ctx).Model(&Execution{}).
-		Where("id = ?", eid).Updates(map[string]any{
-		"progress": uint8(progress),
-		"status":   status.ToUint8(),
-		"utime":    time.Now().UnixMilli(),
-	}).Error
-}
-
 func (h *GormExecutionDAO) ToDomain(e Execution) task.Execution {
 	return task.Execution{
 		ID:       e.ID,
@@ -31,19 +22,6 @@ func (h *GormExecutionDAO) ToDomain(e Execution) task.Execution {
 		Ctime:    time.UnixMilli(e.Ctime),
 		Utime:    time.UnixMilli(e.Utime),
 	}
-}
-
-func (h *GormExecutionDAO) Create(ctx context.Context, tid int64) (int64, error) {
-	now := time.Now().UnixMilli()
-	exec := Execution{
-		Tid:      tid,
-		Status:   uint8(task.ExecStatusRunning),
-		Progress: 0,
-		Ctime:    now,
-		Utime:    now,
-	}
-	err := h.db.WithContext(ctx).Create(&exec).Error
-	return exec.ID, err
 }
 
 func (h *GormExecutionDAO) GetLastExecution(ctx context.Context, tid int64) (task.Execution, error) {
